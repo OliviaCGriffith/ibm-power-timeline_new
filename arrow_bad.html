@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>IBM Power Timeline</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/pptxgenjs@3.11.0/dist/pptxgen.bundle.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f9fafb; }
+    input[type="range"] { width: 100%; cursor: pointer; }
+    input[type="date"] { width: 100%; padding: 12px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px; }
+    input[type="radio"] { cursor: pointer; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState } = React;
+
+// --- Utilities ---
+const parseDateLocal = (s) => { if (!s) return null; const [y,m,d] = s.split('-').map(Number); return new Date(y, m-1, d); };
+
+// US Federal Holidays
+const getUSHolidays = (year) => {
+  const holidays = [];
+  holidays.push(new Date(year, 0, 1));   // New Year's Day
+  holidays.push(new Date(year, 6, 4));   // Independence Day
+  holidays.push(new Date(year, 10, 11)); // Veterans Day
+  holidays.push(new Date(year, 11, 25)); // Christmas Day
+  
+  let d = new Date(year, 0, 1);
+  let mondayCount = 0;
+  while (mondayCount < 3) { if (d.getDay() === 1) mondayCount++; if (mondayCount < 3) d.setDate(d.getDate() + 1); }
+  holidays.push(new Date(d)); // MLK
+  
+  d = new Date(year, 1, 1);
+  mondayCount = 0;
+  while (mondayCount < 3) { if (d.getDay() === 1) mondayCount++; if (mondayCount < 3) d.setDate(d.getDate() + 1); }
+  holidays.push(new Date(d)); // Presidents Day
+  
+  d = new Date(year, 5, 0); 
+  while (d.getDay() !== 1) d.setDate(d.getDate() - 1);
+  holidays.push(new Date(d)); // Memorial Day
+  
+  d = new Date(year, 8, 1);
+  while (d.getDay() !== 1) d.setDate(d.getDate() + 1);
+  holidays.push(new Date(d)); // Labor Day
+  
+  d = new Date(year, 9, 1);
+  mondayCount = 0;
+  while (mondayCount < 2) { if (d.getDay() === 1) mondayCount++; if (mondayCount < 2) d.setDate(d.getDate() + 1); }
+  holidays.push(new Date(d)); // Columbus Day
+  
+  d = new Date(year, 10, 1);
+  let thursdayCount = 0;
+  while (thursdayCount < 4) { if (d.getDay() === 4) thursdayCount++; if (thursdayCount < 4) d.setDate(d.getDate() + 1); }
+  holidays.push(new Date(d)); // Thanksgiving
+  
+  return holidays;
+};
+
+const isWeekend = (d) => d.getDay() === 0 || d.getDay() === 6;
+const isHoliday = (d) => {
+  const dominated = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const holidays = getUSHolidays(d.getFullYear());
+  return holidays.some(h => h.getTime() === dominated.getTime());
+};
+const isBusinessDay = (d) => !isWeekend(d) && !isHoliday(d);
+
+const addBusinessDays = (d, n) => {
+  const result = new Date(d);
+  const direction = n >= 0 ? 1 : -1;
+  let remaining = Math.abs(n);
+  while (remaining > 0) {
+    result.setDate(result.getDate() + direction);
+    if (isBusinessDay(result)) remaining--;
+  }
+  return result;
+};
+
+const addBusinessWeeks = (d, w) => addBusinessDays(d, w * 5);
+const calcWeeks = (n) => { const c = Number(n)||0; if (c===0) return 0; if (c<=10) return 1; if (c<=20) return 2; return 3; };
+const fmt = (d) => (d instanceof Date ? d.toLocaleDateString() : '');
+
+function IBMWizard(){
+  const [step, setStep] = useState(1);
+  const [mode, setMode] = useState(null);
+  const [form, setForm] = useState({ poDate:'', endMigrationDate:'', s1022:0, s1024:0, e1050:0, e1080:0, lpars:0 });
+  const [timeline, setTimeline] = useState(null);
+  const [error, setError] = useState('');
+
+  const handleChange = (e) => {
+    const { name, value, type } = e.target;
+    setForm(prev => ({ ...prev, [name]: (type==='range' || type==='number') ? Number(value) : value }));
+  };
+
+  const validate = () => {
+    if (!mode) { setError('Choose PO Received Date or End of Migration Date'); return false; }
+    if (mode==='po' && !form.poDate) { setError('Enter PO Received Date'); return false; }
+    if (mode==='end' && !form.endMigrationDate) { setError('Enter End of Migration Date'); return false; }
+    setError(''); return true;
+  };
+
+  const generateTimeline = () => {
+    if (!validate()) return;
+    let po, buildShip, install, endMigration;
+    if (mode==='po'){
+      po = parseDateLocal(form.poDate);
+      buildShip = addBusinessDays(po, 21);
+      install = addBusinessWeeks(buildShip, calcWeeks(form.s1022));
+      install = addBusinessWeeks(install, calcWeeks(form.s1024));
+      install = addBusinessWeeks(install, calcWeeks(form.e1050));
+      install = addBusinessWeeks(install, calcWeeks(form.e1080));
+      endMigration = addBusinessDays(install, 5 + Math.floor((form.lpars||0)/12));
+    } else {
+      endMigration = parseDateLocal(form.endMigrationDate);
+      install = addBusinessDays(endMigration, -(5 + Math.floor((form.lpars||0)/12)));
+      install = addBusinessWeeks(install, -calcWeeks(form.e1080));
+      install = addBusinessWeeks(install, -calcWeeks(form.e1050));
+      install = addBusinessWeeks(install, -calcWeeks(form.s1024));
+      install = addBusinessWeeks(install, -calcWeeks(form.s1022));
+      buildShip = addBusinessDays(install, -21);
+      po = addBusinessDays(buildShip, -21);
+    }
+    setTimeline({ po, buildShip, install, endMigration });
+    setStep(3);
+  };
+
+  const downloadPPT = async () => {
+    if (!timeline) return alert('Generate the timeline first.');
+    const Pctor = window.PptxGenJS?.default || window.PptxGenJS;
+    if (!Pctor) return alert('PptxGenJS library missing.');
+
+    const pptx = new Pctor();
+    pptx.layout = "LAYOUT_WIDE"; 
+    pptx.title = "IBM Power Timeline";
+    
+    const slide = pptx.addSlide();
+    slide.background = { color: "FFFFFF" };
+    
+    const ibmBlue = "0F62FE";
+    const black = "000000";
+    
+    // --- Layout Coordinates (Inches) ---
+    const col1X = 0.64; const colW = 2.44;
+    const col2X = 3.87;
+    const col3X = 7.02;
+    const col4X = 10.34;
+    
+    const labelY = 3.16; 
+    const lineY = 3.37; 
+    const dateY = 3.73; 
+    const bulletY = 4.30;
+    
+    const iconSize = 0.9;
+    const iconY = 2.20; 
+    const centerOffset = (colW - iconSize) / 2;
+    const icon1X = col1X + centerOffset;
+    const icon2X = col2X + centerOffset;
+    const icon3X = col3X + centerOffset;
+    const icon4X = col4X + centerOffset;
+
+    // --- SVGS ---
+
+    // 1. PO Received: Document/List (Outlined)
+    const docSvg = `data:image/svg+xml;base64,${btoa('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><defs><style>.cls-1{fill:none;stroke:#000;stroke-linecap:round;stroke-linejoin:round;stroke-width:1px;}</style></defs><path class="cls-1" d="M22,29H10a3,3,0,0,1-3-3V6A3,3,0,0,1,10,3H22a3,3,0,0,1,3,3V26A3,3,0,0,1,22,29Z"/><line class="cls-1" x1="11" y1="9" x2="21" y2="9"/><line class="cls-1" x1="11" y1="14" x2="21" y2="14"/><line class="cls-1" x1="11" y1="19" x2="16" y2="19"/></svg>')}`;
+    
+    // 2. Build/Ship: Truck (Outlined)
+    const truckSvg = `data:image/svg+xml;base64,${btoa('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><defs><style>.cls-1{fill:none;stroke:#000;stroke-linecap:round;stroke-linejoin:round;stroke-width:1px;}</style></defs><rect class="cls-1" x="2" y="6" width="18" height="14" rx="1"/><path class="cls-1" d="M20,10h5.59a1,1,0,0,1,.84.46l3.29,4.94A1,1,0,0,1,30,16v4H20"/><circle class="cls-1" cx="8" cy="24" r="3"/><circle class="cls-1" cx="24" cy="24" r="3"/><line class="cls-1" x1="2" y1="24" x2="5" y2="24"/><line class="cls-1" x1="11" y1="24" x2="21" y2="24"/><line class="cls-1" x1="27" y1="24" x2="30" y2="24"/></svg>')}`;
+    
+    // 3. Installation: Gear with Arrows (Process Icon)
+    // Updated to match the image: Gear surrounded by rotating arrows.
+    const toolsSvg = `data:image/svg+xml;base64,${btoa('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><defs><style>.cls-1{fill:none;stroke:#000;stroke-linecap:round;stroke-linejoin:round;stroke-width:1px;}</style></defs><circle class="cls-1" cx="16" cy="16" r="2"/><line class="cls-1" x1="14.6" y1="14.6" x2="4" y2="4"/><polyline class="cls-1" points="4 9 4 4 9 4"/><line class="cls-1" x1="17.4" y1="14.6" x2="28" y2="4"/><polyline class="cls-1" points="23 4 28 4 28 9"/><line class="cls-1" x1="17.4" y1="17.4" x2="28" y2="28"/><polyline class="cls-1" points="28 23 28 28 23 28"/><line class="cls-1" x1="14.6" y1="17.4" x2="4" y2="28"/><polyline class="cls-1" points="9 28 4 28 4 23"/></svg>')}`;
+    
+    // 4. End of Migration: Checkmark in Circle
+    const checkSvg = `data:image/svg+xml;base64,${btoa('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><defs><style>.cls-1{fill:none;stroke:#000;stroke-linecap:round;stroke-linejoin:round;stroke-width:1px;}</style></defs><circle class="cls-1" cx="16" cy="16" r="13"/><polyline class="cls-1" points="9 16 14 21 23 11"/></svg>')}`;
+
+    // Add Images (Icons)
+    slide.addImage({ data: docSvg,   x: icon1X, y: iconY, w: iconSize, h: iconSize });
+    slide.addImage({ data: truckSvg, x: icon2X, y: iconY, w: iconSize, h: iconSize });
+    slide.addImage({ data: toolsSvg, x: icon3X, y: iconY, w: iconSize, h: iconSize });
+    slide.addImage({ data: checkSvg, x: icon4X, y: iconY, w: iconSize, h: iconSize });
+
+    // Title
+    slide.addText("IBM Power Timeline", {
+      x: 0.5, y: 0.35, w: 8, h: 0.7,
+      fontSize: 44, bold: false, color: black,
+      align: "left", fontFace: "IBM Plex Sans Light"
+    });
+    
+    // Lines
+    const line1StartX = 2819459 / 914400; const line2StartX = 5773697 / 914400; const line3StartX = 8805017 / 914400;
+    const line1W = 721691 / 914400; const line2W = 644606 / 914400; const line3W = 644607 / 914400;
+    
+    slide.addShape(pptx.shapes.LINE, { x: line1StartX, y: lineY, w: line1W, h: 0, line: { color: black, width: 1.0 } });
+    slide.addShape(pptx.shapes.LINE, { x: line2StartX, y: lineY, w: line2W, h: 0, line: { color: black, width: 1.0 } });
+    slide.addShape(pptx.shapes.LINE, { x: line3StartX, y: lineY, w: line3W, h: 0, line: { color: black, width: 1.0, endArrowType: 'triangle' } });
+    
+    // Labels & Data
+    const labelOpts = { fontSize: 20, color: ibmBlue, align: "center", fontFace: "IBM Plex Sans Light" };
+    slide.addText("PO Received", { x: col1X, y: labelY, w: colW, h: 0.4, ...labelOpts });
+    slide.addText("Build/Ship", { x: col2X, y: labelY, w: colW, h: 0.4, ...labelOpts });
+    slide.addText("Installation", { x: col3X, y: labelY, w: colW, h: 0.4, ...labelOpts });
+    slide.addText("End of Migration", { x: col4X, y: labelY, w: colW, h: 0.4, ...labelOpts });
+    
+    const dateOpts = { fontSize: 16, italic: true, color: black, align: "center", fontFace: "IBM Plex Sans Light" };
+    slide.addText(fmt(timeline.po), { x: col1X, y: dateY, w: colW, h: 0.35, ...dateOpts });
+    slide.addText(fmt(timeline.buildShip), { x: col2X, y: dateY, w: colW, h: 0.35, ...dateOpts });
+    slide.addText(fmt(timeline.install), { x: col3X, y: dateY, w: colW, h: 0.35, ...dateOpts });
+    slide.addText(fmt(timeline.endMigration), { x: col4X, y: dateY, w: colW, h: 0.35, ...dateOpts });
+    
+    // Bullets
+    const bullet1X = 663995 / 914400; const bullet2X = 3541150 / 914400; const bullet3X = 6518973 / 914400; const bullet4X = 9429456 / 914400;
+    
+    const addBullet = (x, y, text) => {
+      slide.addText([
+        { text: "✓ ", options: { color: ibmBlue } },
+        { text: text, options: { color: black } }
+      ], { x: x, y: y, w: colW, h: 1.2, fontSize: 14, fontFace: "IBM Plex Sans Light", valign: "top", align: "left" });
+    };
+    
+    addBullet(bullet1X, bulletY, "IBM MFG is 100% Make to Order.");
+    addBullet(bullet2X, bulletY, "Approx 3 weeks from PO to Arrival at Customer Data Center");
+    addBullet(bullet3X, bulletY, "IBM SSR Installation of servers into racks.");
+    
+    const bullet4Y = 4012462 / 914400;
+    slide.addText([
+      { text: "✓ ", options: { color: ibmBlue } },
+      { text: "All migration/testing of LPARS have been completed.\n\n", options: { color: black } },
+      { text: "✓ ", options: { color: ibmBlue } },
+      { text: "All old servers have been replaced.", options: { color: black } }
+    ], { x: bullet4X, y: bullet4Y, w: colW, h: 1.5, fontSize: 14, fontFace: "IBM Plex Sans Light", valign: "top", align: "left" });
+    
+    await pptx.writeFile({ fileName: 'IBM_Power_Timeline.pptx' });
+  };
+
+  const styles = {
+    container: { minHeight: '100vh', backgroundColor: '#f9fafb', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '32px' },
+    card: { width: '100%', maxWidth: '896px', backgroundColor: 'white', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)', borderRadius: '16px', overflow: 'hidden' },
+    header: { background: 'linear-gradient(to right, #1e40af, #4f46e5)', padding: '32px', color: 'white' },
+    headerTitle: { fontSize: '28px', fontWeight: '800', margin: 0 },
+    content: { padding: '32px' },
+    error: { color: '#dc2626', marginBottom: '16px' },
+    radioGroup: { display: 'flex', gap: '24px', alignItems: 'center', marginBottom: '24px' },
+    radioLabel: { display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' },
+    grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '24px', marginBottom: '24px' },
+    fieldLabel: { display: 'block', fontSize: '14px', fontWeight: '500', color: '#374151', marginBottom: '8px' },
+    fieldValue: { fontWeight: '700', color: '#4f46e5' },
+    buttonRow: { display: 'flex', justifyContent: 'flex-end', gap: '12px' },
+    buttonPrimary: { padding: '10px 24px', backgroundColor: '#4f46e5', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '14px', fontWeight: '500' },
+    buttonSecondary: { padding: '10px 24px', backgroundColor: 'white', color: '#374151', border: '1px solid #d1d5db', borderRadius: '6px', cursor: 'pointer', fontSize: '14px', fontWeight: '500' },
+    resultTitle: { fontSize: '24px', fontWeight: '600', marginBottom: '40px' },
+    resultButtonRow: { display: 'flex', justifyContent: 'space-between', marginTop: '40px' }
+  };
+
+  return (
+    <div style={styles.container}>
+      <div style={styles.card}>
+        <div style={styles.header}>
+          <h1 style={styles.headerTitle}>IBM Power — Timeline</h1>
+        </div>
+        <div style={styles.content}>
+          {step === 1 && (
+            <div>
+              {error && <p style={styles.error}>{error}</p>}
+              <div style={styles.radioGroup}>
+                <label style={styles.radioLabel}>
+                  <input type="radio" name="dateMode" checked={mode === 'po'} onChange={() => { setMode('po'); setForm(prev=>({...prev, endMigrationDate:''})); }} />
+                  <span>PO Received Date</span>
+                </label>
+                <label style={styles.radioLabel}>
+                  <input type="radio" name="dateMode" checked={mode === 'end'} onChange={() => { setMode('end'); setForm(prev=>({...prev, poDate:''})); }} />
+                  <span>End of Migration Date</span>
+                </label>
+              </div>
+              <div style={styles.grid}>
+                {mode === 'po' && (
+                  <div>
+                    <label style={styles.fieldLabel}>PO Received Date</label>
+                    <input name="poDate" type="date" value={form.poDate} onChange={handleChange} />
+                  </div>
+                )}
+                {mode === 'end' && (
+                  <div>
+                    <label style={styles.fieldLabel}>End of Migration Date</label>
+                    <input name="endMigrationDate" type="date" value={form.endMigrationDate} onChange={handleChange} />
+                  </div>
+                )}
+                <div>
+                  <label style={styles.fieldLabel}># S1022/1122 — <span style={styles.fieldValue}>{form.s1022}</span></label>
+                  <input name="s1022" type="range" min="0" max="25" step="1" value={form.s1022} onChange={handleChange} />
+                </div>
+                <div>
+                  <label style={styles.fieldLabel}># S1024/1124 — <span style={styles.fieldValue}>{form.s1024}</span></label>
+                  <input name="s1024" type="range" min="0" max="25" step="1" value={form.s1024} onChange={handleChange} />
+                </div>
+                <div>
+                  <label style={styles.fieldLabel}># E1050/1150 — <span style={styles.fieldValue}>{form.e1050}</span></label>
+                  <input name="e1050" type="range" min="0" max="20" step="1" value={form.e1050} onChange={handleChange} />
+                </div>
+                <div>
+                  <label style={styles.fieldLabel}># E1080/1180 — <span style={styles.fieldValue}>{form.e1080}</span></label>
+                  <input name="e1080" type="range" min="0" max="10" step="1" value={form.e1080} onChange={handleChange} />
+                </div>
+                <div>
+                  <label style={styles.fieldLabel}>LPAR Count — <span style={styles.fieldValue}>{form.lpars}</span></label>
+                  <input name="lpars" type="range" min="0" max="200" step="1" value={form.lpars} onChange={handleChange} />
+                </div>
+              </div>
+              <div style={styles.buttonRow}>
+                <button onClick={generateTimeline} style={styles.buttonPrimary}>Next</button>
+              </div>
+            </div>
+          )}
+
+          {step === 3 && timeline && (
+            <div>
+              <h2 style={styles.resultTitle}>Timeline Result</h2>
+              <div style={{ position: 'relative', width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 24px', marginTop: '80px' }}>
+                <div style={{ position: 'absolute', left: 0, right: 0, height: '24px', background: 'linear-gradient(to right, #facc15, #f97316, #a855f7, #1e3a8a)', borderRadius: '9999px' }}></div>
+                {[
+                  { label: 'PO Received', date: fmt(timeline.po), gradient: 'linear-gradient(to bottom right, #fde047, #eab308)' },
+                  { label: 'Build / Ship', date: fmt(timeline.buildShip), gradient: 'linear-gradient(to bottom right, #fdba74, #ea580c)' },
+                  { label: 'Installation', date: fmt(timeline.install), gradient: 'linear-gradient(to bottom right, #c084fc, #9333ea)' },
+                  { label: 'End of Migration', date: fmt(timeline.endMigration), gradient: 'linear-gradient(to bottom right, #60a5fa, #1e3a8a)' }
+                ].map((item, i) => (
+                  <div key={i} style={{ position: 'relative', zIndex: 10, display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', transform: 'translateY(-40px)' }}>
+                    <div style={{ width: '128px', height: '128px', borderRadius: '50%', backgroundColor: 'white', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '4px solid #e5e7eb' }}>
+                      <div style={{ width: '96px', height: '96px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: '700', fontSize: '14px', background: item.gradient }}>
+                        {item.date}
+                      </div>
+                    </div>
+                    <p style={{ marginTop: '16px', color: '#374151', fontWeight: '600', fontSize: '14px' }}>{item.label}</p>
+                  </div>
+                ))}
+              </div>
+              <div style={styles.resultButtonRow}>
+                <button onClick={() => setStep(1)} style={styles.buttonSecondary}>Back</button>
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <button onClick={() => { setStep(1); setTimeline(null); }} style={styles.buttonSecondary}>Start Over</button>
+                  <button onClick={downloadPPT} style={styles.buttonPrimary}>Download PPT</button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<IBMWizard />);
+</script>
+</body>
+</html>
